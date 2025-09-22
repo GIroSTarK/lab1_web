@@ -8,15 +8,20 @@ import { v4 as uuidv4 } from 'uuid';
 
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'dev_admin_secret_change_me';
 
 const usersByUsername = new Map();
 const usersById = new Map();
 const roomsById = new Map();
 
 function createToken(user) {
-  return jwt.sign({ sub: user.id, username: user.username }, JWT_SECRET, {
-    expiresIn: '7d',
-  });
+  return jwt.sign(
+    { sub: user.id, username: user.username, role: user.role },
+    JWT_SECRET,
+    {
+      expiresIn: '7d',
+    }
+  );
 }
 
 function authMiddleware(req, res, next) {
@@ -65,11 +70,14 @@ app.post('/api/register', async (req, res) => {
   if (usersByUsername.has(username))
     return res.status(409).json({ error: 'Username already exists' });
   const passwordHash = await bcrypt.hash(password, 10);
-  const user = { id: uuidv4(), username, passwordHash };
+  const user = { id: uuidv4(), username, passwordHash, role: 'user' };
   usersByUsername.set(username, user);
   usersById.set(user.id, user);
   const token = createToken(user);
-  res.json({ token, user: { id: user.id, username: user.username } });
+  res.json({
+    token,
+    user: { id: user.id, username: user.username, role: user.role },
+  });
 });
 
 app.post('/api/login', async (req, res) => {
@@ -79,11 +87,35 @@ app.post('/api/login', async (req, res) => {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
   const token = createToken(user);
-  res.json({ token, user: { id: user.id, username: user.username } });
+  res.json({
+    token,
+    user: { id: user.id, username: user.username, role: user.role },
+  });
 });
 
 app.get('/api/me', authMiddleware, (req, res) => {
-  res.json({ id: req.user.id, username: req.user.username });
+  res.json({
+    id: req.user.id,
+    username: req.user.username,
+    role: req.user.role,
+  });
+});
+
+app.post('/api/admin/elevate', authMiddleware, (req, res) => {
+  const { secret } = req.body || {};
+  if (!secret || secret !== ADMIN_SECRET) {
+    return res.status(403).json({ error: 'Invalid secret' });
+  }
+  const user = req.user;
+  if (user.role !== 'admin') {
+    user.role = 'admin';
+  }
+  const token = createToken(user);
+  return res.json({
+    ok: true,
+    token,
+    user: { id: user.id, username: user.username, role: user.role },
+  });
 });
 
 app.get('/api/rooms', (req, res) => {
@@ -129,8 +161,10 @@ app.delete('/api/rooms/:roomId', authMiddleware, (req, res) => {
   const { roomId } = req.params;
   const room = roomsById.get(roomId);
   if (!room) return res.status(404).json({ error: 'Room not found' });
-  if (room.ownerId !== req.user.id)
-    return res.status(403).json({ error: 'Only owner can delete room' });
+  if (room.ownerId !== req.user.id && req.user.role !== 'admin')
+    return res
+      .status(403)
+      .json({ error: 'Only owner or admin can delete room' });
   roomsById.delete(roomId);
   io.to(roomId).emit('room_deleted', { roomId });
   io.socketsLeave(roomId);
@@ -150,7 +184,11 @@ io.use((socket, next) => {
     const payload = jwt.verify(token, JWT_SECRET);
     const user = usersById.get(payload.sub);
     if (!user) return next(new Error('User not found'));
-    socket.data.user = { id: user.id, username: user.username };
+    socket.data.user = {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+    };
     next();
   } catch (err) {
     next(new Error('Invalid token'));

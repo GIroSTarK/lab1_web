@@ -116,7 +116,7 @@ export default function RoomsPage() {
                 {r.protected ? '🔒 ' : ''}({r.membersCount} online,{' '}
                 {r.messagesCount} messages)
               </span>
-              {myId === r.ownerId && (
+              {(myId === r.ownerId || user?.role === 'admin') && (
                 <button
                   onClick={async () => {
                     try {
